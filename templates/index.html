@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Self-hosted image metadata viewer and remover. Inspect EXIF data, GPS location, camera info and selectively strip metadata fields. Open source.">
+    <title>Image Metadata Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script>
+        // Prevent theme flash
+        (function () {
+            const t = localStorage.getItem('theme') ||
+                (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+    <div class="container">
+        <div class="nav-brand">
+            <h1>
+                <button id="theme-toggle" class="theme-btn" aria-label="Toggle theme" title="Toggle dark/light mode">☀</button>
+                Image Metadata Tool
+            </h1>
+        </div>
+    </div>
+</nav>
+
+<!-- Main -->
+<main class="container" style="padding-top:2rem;padding-bottom:4rem;">
+
+    {% if not pil_support %}
+    <div class="alert alert-error" style="margin-bottom:1.5rem;">
+        <strong>⚠ Pillow not installed.</strong>
+        Run <code>pip install Pillow</code> in your virtual environment, then restart.
+    </div>
+    {% endif %}
+
+    {% if not piexif_support %}
+    <div class="alert alert-error" style="margin-bottom:1.5rem;">
+        <strong>⚠ piexif not installed.</strong>
+        Run <code>pip install piexif</code> in your virtual environment, then restart.
+    </div>
+    {% endif %}
+
+    <!-- Page header -->
+    <div class="page-header">
+        <h2>Image Metadata Viewer & Remover</h2>
+        <p class="subtitle">
+            Upload an image to inspect its EXIF metadata —
+            camera settings, GPS location, timestamps, and more.
+            <br>Select fields to remove and download a cleaned copy.
+            <br><strong>Max file size: 25 MB. Supported: JPG, JPEG, PNG, TIFF, WebP.</strong>
+        </p>
+    </div>
+
+    <div class="meta-layout">
+
+        <!-- ── Left: Upload + Image Info ─────────────────────────────────── -->
+        <div class="meta-main">
+
+            <!-- Step 1: Upload -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="step-badge">1</span>
+                    <h3>Upload Image</h3>
+                </div>
+
+                <div id="file-drop" class="file-drop-zone file-drop-lg {% if not pil_support or not piexif_support %}disabled{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="40" height="40">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <polyline points="17 8 12 3 7 8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <line x1="12" y1="3" x2="12" y2="15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span id="file-label">Drop an image here or <u>browse</u></span>
+                    <small class="field-hint" style="margin-top:0.25rem;">JPG, JPEG, PNG, TIFF, WebP — up to 25 MB</small>
+                    <input type="file" id="file-input"
+                           accept=".jpg,.jpeg,.png,.tiff,.tif,.webp,image/jpeg,image/png,image/tiff,image/webp"
+                           {% if not pil_support or not piexif_support %}disabled{% endif %}
+                           style="display:none;">
+                </div>
+            </div>
+
+            <!-- Image preview + basic info (hidden until upload) -->
+            <div class="card" id="image-info-card" style="display:none;">
+                <div class="card-header">
+                    <span class="step-badge">✓</span>
+                    <h3>Image Info</h3>
+                </div>
+                <div class="image-preview-row">
+                    <img id="image-thumb" class="image-thumb" src="" alt="Preview">
+                    <div class="image-basic-info">
+                        <div class="info-row"><span class="info-label">Filename</span><span id="info-filename" class="info-value">—</span></div>
+                        <div class="info-row"><span class="info-label">Dimensions</span><span id="info-dims" class="info-value">—</span></div>
+                        <div class="info-row"><span class="info-label">Format</span><span id="info-format" class="info-value">—</span></div>
+                        <div class="info-row"><span class="info-label">Size</span><span id="info-size" class="info-value">—</span></div>
+                        <div class="info-row" id="info-gps-row" style="display:none;">
+                            <span class="info-label">📍 GPS</span>
+                            <span id="info-gps" class="info-value gps-value">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: Metadata (hidden until upload) -->
+            <div class="card" id="metadata-card" style="display:none;">
+                <div class="card-header">
+                    <span class="step-badge">2</span>
+                    <h3>Metadata <span id="tag-count" class="badge">0</span></h3>
+                </div>
+
+                <div id="no-metadata-msg" style="display:none;">
+                    <div class="placeholder-body" style="padding:1rem;">
+                        <p>No EXIF metadata found in this image.</p>
+                    </div>
+                </div>
+
+                <div id="metadata-actions" style="display:none;">
+                    <div class="meta-toolbar">
+                        <button id="select-sensitive-btn" class="btn btn-sm btn-outline" title="Select GPS, datetime, author fields">
+                            Select Sensitive
+                        </button>
+                        <button id="select-all-btn" class="btn btn-sm btn-outline">Select All</button>
+                        <button id="select-none-btn" class="btn btn-sm btn-outline">Select None</button>
+                        <span id="selected-count" class="meta-count">0 selected</span>
+                    </div>
+
+                    <div id="metadata-groups"></div>
+
+                    <button id="remove-btn" class="btn btn-primary btn-full" style="margin-top:1rem;" disabled>
+                        Remove Selected Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Right: Sidebar ────────────────────────────────────────────── -->
+        <div class="meta-sidebar">
+
+            <!-- Results card (hidden until removal) -->
+            <div class="card" id="results-card" style="display:none;">
+                <div class="card-header">
+                    <span class="step-badge">3</span>
+                    <h3>Cleaned Image</h3>
+                </div>
+                <p id="removed-summary" class="field-hint" style="margin-bottom:0.75rem;font-size:0.85rem;"></p>
+                <button id="download-btn" class="btn btn-primary" style="width:100%;margin-bottom:1rem;">
+                    ↓ Download Cleaned Image
+                </button>
+                <p class="field-hint">The original image is not modified. You download a new copy with selected metadata removed.</p>
+            </div>
+
+            <!-- Placeholder -->
+            <div class="card" id="placeholder-card">
+                <div class="placeholder-body">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="52" height="52" style="opacity:0.25;margin-bottom:1rem;">
+                        <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/>
+                        <path d="m21 15-5-5L5 21" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <p>Upload an image to inspect its metadata</p>
+                </div>
+            </div>
+
+        </div>
+    </div><!-- /.meta-layout -->
+
+</main>
+
+<!-- Footer -->
+<footer class="footer">
+    <div class="container">
+        <p>Image Metadata Tool · Built by <a href="https://nextframe.dev" target="_blank" rel="noopener">nextframe.dev</a> · Published by <a href="https://quietlinepress.com" target="_blank" rel="noopener">Quiet Line Press</a> · Try also <a href="https://opennote.dev" target="_blank" rel="noopener">opennote.dev</a></p>
+    </div>
+</footer>
+
+<!-- Spinner overlay -->
+<div id="spinner" class="spinner-overlay" style="display:none;">
+    <div class="spinner-box">
+        <div class="spinner"></div>
+        <p id="spinner-msg">Uploading…</p>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ── Theme toggle ────────────────────────────────────────────────────────
+    const themeBtn = document.getElementById('theme-toggle');
+    function applyTheme(t) {
+        document.documentElement.setAttribute('data-theme', t);
+        themeBtn.textContent = t === 'dark' ? '☀' : '🌙';
+        themeBtn.style.fontSize = t === 'dark' ? '1.7rem' : '1.4rem';
+        localStorage.setItem('theme', t);
+    }
+    applyTheme(localStorage.getItem('theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+    themeBtn.addEventListener('click', () => {
+        applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+    });
+
+    // ── Elements ────────────────────────────────────────────────────────────
+    const fileInput       = document.getElementById('file-input');
+    const fileDropZone    = document.getElementById('file-drop');
+    const fileLabel       = document.getElementById('file-label');
+    const imageInfoCard   = document.getElementById('image-info-card');
+    const imageThumb      = document.getElementById('image-thumb');
+    const infoFilename    = document.getElementById('info-filename');
+    const infoDims        = document.getElementById('info-dims');
+    const infoFormat      = document.getElementById('info-format');
+    const infoSize        = document.getElementById('info-size');
+    const infoGpsRow      = document.getElementById('info-gps-row');
+    const infoGps         = document.getElementById('info-gps');
+    const metadataCard    = document.getElementById('metadata-card');
+    const noMetadataMsg   = document.getElementById('no-metadata-msg');
+    const metadataActions = document.getElementById('metadata-actions');
+    const metadataGroups  = document.getElementById('metadata-groups');
+    const tagCount        = document.getElementById('tag-count');
+    const selectedCount   = document.getElementById('selected-count');
+    const removeBtn       = document.getElementById('remove-btn');
+    const resultsCard     = document.getElementById('results-card');
+    const placeholderCard = document.getElementById('placeholder-card');
+    const removedSummary  = document.getElementById('removed-summary');
+    const downloadBtn     = document.getElementById('download-btn');
+    const spinnerEl       = document.getElementById('spinner');
+    const spinnerMsg      = document.getElementById('spinner-msg');
+
+    let currentSession = null;
+    let currentFilename = null;
+    let downloadUrl = null;
+
+    // Track all removals cumulatively so the server can always strip from the original
+    let cumulativeRemoveGroups = new Set();
+    let cumulativeRemoveTags = [];  // [{ifd, id}]
+
+    // ── File drop zone ──────────────────────────────────────────────────────
+    fileDropZone.addEventListener('click', () => fileInput.click());
+    fileDropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        fileDropZone.classList.add('active');
+    });
+    fileDropZone.addEventListener('dragleave', () => fileDropZone.classList.remove('active'));
+    fileDropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        fileDropZone.classList.remove('active');
+        const file = e.dataTransfer.files[0];
+        if (file) uploadFile(file);
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+    });
+
+    // ── Upload ──────────────────────────────────────────────────────────────
+    async function uploadFile(file) {
+        fileLabel.textContent = file.name;
+        showSpinner('Uploading and reading metadata…');
+
+        const fd = new FormData();
+        fd.append('image', file);
+
+        try {
+            const res  = await fetch('/upload', { method: 'POST', body: fd });
+            const data = await res.json();
+            hideSpinner();
+            if (data.error) { alert('Error: ' + data.error); return; }
+
+            currentSession  = data.session_id;
+            currentFilename = data.filename;
+            downloadUrl     = null;
+            cumulativeRemoveGroups = new Set();
+            cumulativeRemoveTags = [];
+
+            showImageInfo(data);
+            showMetadata(data.metadata);
+
+            // Reset results
+            resultsCard.style.display = 'none';
+            placeholderCard.style.display = 'block';
+        } catch (err) {
+            hideSpinner();
+            alert('Network error: ' + err.message);
+        }
+    }
+
+    // ── Image info ──────────────────────────────────────────────────────────
+    function showImageInfo(data) {
+        imageThumb.src = data.thumbnail;
+        infoFilename.textContent = data.basic.filename;
+        infoDims.textContent     = `${data.basic.width} × ${data.basic.height} px`;
+        infoFormat.textContent   = data.basic.format.toUpperCase();
+        infoSize.textContent     = formatBytes(data.basic.size_bytes);
+
+        if (data.metadata.gps_decimal) {
+            const g = data.metadata.gps_decimal;
+            infoGps.textContent = `${g.lat}, ${g.lon}`;
+            infoGpsRow.style.display = 'flex';
+        } else {
+            infoGpsRow.style.display = 'none';
+        }
+
+        imageInfoCard.style.display = 'block';
+    }
+
+    // ── Metadata rendering ──────────────────────────────────────────────────
+    function showMetadata(meta) {
+        metadataGroups.innerHTML = '';
+        metadataCard.style.display = 'block';
+
+        if (!meta.has_exif || !meta.groups.length) {
+            noMetadataMsg.style.display = 'block';
+            metadataActions.style.display = 'none';
+            tagCount.textContent = '0';
+            return;
+        }
+
+        noMetadataMsg.style.display = 'none';
+        metadataActions.style.display = 'block';
+
+        let totalTags = 0;
+
+        meta.groups.forEach((group) => {
+            const section = document.createElement('div');
+            section.className = 'meta-group';
+
+            const header = document.createElement('div');
+            header.className = 'meta-group-header';
+            header.innerHTML = `
+                <label class="meta-group-check">
+                    <input type="checkbox" class="group-cb" data-ifd="${esc(group.ifd)}">
+                    <strong>${esc(group.label)}</strong>
+                    <span class="badge badge-sm">${group.tags.length}</span>
+                </label>
+                <button class="btn btn-sm btn-ghost meta-collapse-btn" data-expanded="true">▼</button>
+            `;
+            section.appendChild(header);
+
+            const body = document.createElement('div');
+            body.className = 'meta-group-body';
+
+            group.tags.forEach((tag) => {
+                totalTags++;
+                const row = document.createElement('div');
+                row.className = 'meta-tag-row' + (tag.sensitive ? ' sensitive' : '');
+                const displayVal = typeof tag.value === 'object' ? JSON.stringify(tag.value) : String(tag.value);
+                row.innerHTML = `
+                    <label class="meta-tag-check">
+                        <input type="checkbox" class="tag-cb" data-ifd="${esc(tag.ifd)}" data-id="${tag.id}"
+                               ${tag.sensitive ? 'data-sensitive="1"' : ''}>
+                        <span class="tag-name">${esc(tag.name)}</span>
+                    </label>
+                    <span class="tag-value" title="${esc(displayVal)}">${esc(truncate(displayVal, 60))}</span>
+                `;
+                body.appendChild(row);
+            });
+
+            section.appendChild(body);
+            metadataGroups.appendChild(section);
+
+            // Collapse toggle
+            const collapseBtn = header.querySelector('.meta-collapse-btn');
+            collapseBtn.addEventListener('click', () => {
+                const expanded = collapseBtn.getAttribute('data-expanded') === 'true';
+                body.style.display = expanded ? 'none' : 'block';
+                collapseBtn.textContent = expanded ? '▶' : '▼';
+                collapseBtn.setAttribute('data-expanded', expanded ? 'false' : 'true');
+            });
+
+            // Group checkbox controls children
+            const groupCb = header.querySelector('.group-cb');
+            groupCb.addEventListener('change', () => {
+                body.querySelectorAll('.tag-cb').forEach(cb => { cb.checked = groupCb.checked; });
+                updateSelectedCount();
+            });
+
+            // Child checkboxes update group
+            body.querySelectorAll('.tag-cb').forEach(cb => {
+                cb.addEventListener('change', () => {
+                    const all = body.querySelectorAll('.tag-cb');
+                    const checked = body.querySelectorAll('.tag-cb:checked');
+                    groupCb.checked = checked.length === all.length;
+                    groupCb.indeterminate = checked.length > 0 && checked.length < all.length;
+                    updateSelectedCount();
+                });
+            });
+        });
+
+        tagCount.textContent = totalTags;
+        updateSelectedCount();
+    }
+
+    // ── Selection helpers ───────────────────────────────────────────────────
+    function updateSelectedCount() {
+        const checked = document.querySelectorAll('.tag-cb:checked').length;
+        selectedCount.textContent = `${checked} selected`;
+        removeBtn.disabled = checked === 0;
+    }
+
+    document.getElementById('select-sensitive-btn').addEventListener('click', () => {
+        document.querySelectorAll('.tag-cb').forEach(cb => { cb.checked = false; });
+        document.querySelectorAll('.tag-cb[data-sensitive="1"]').forEach(cb => { cb.checked = true; });
+        // Also check entire GPS group
+        document.querySelectorAll('.group-cb[data-ifd="GPS"]').forEach(cb => { cb.checked = true; });
+        // Sync group checkboxes
+        syncAllGroupCheckboxes();
+        updateSelectedCount();
+    });
+
+    document.getElementById('select-all-btn').addEventListener('click', () => {
+        document.querySelectorAll('.tag-cb').forEach(cb => { cb.checked = true; });
+        document.querySelectorAll('.group-cb').forEach(cb => { cb.checked = true; cb.indeterminate = false; });
+        updateSelectedCount();
+    });
+
+    document.getElementById('select-none-btn').addEventListener('click', () => {
+        document.querySelectorAll('.tag-cb').forEach(cb => { cb.checked = false; });
+        document.querySelectorAll('.group-cb').forEach(cb => { cb.checked = false; cb.indeterminate = false; });
+        updateSelectedCount();
+    });
+
+    function syncAllGroupCheckboxes() {
+        document.querySelectorAll('.meta-group').forEach(section => {
+            const groupCb = section.querySelector('.group-cb');
+            const all = section.querySelectorAll('.tag-cb');
+            const checked = section.querySelectorAll('.tag-cb:checked');
+            groupCb.checked = checked.length === all.length;
+            groupCb.indeterminate = checked.length > 0 && checked.length < all.length;
+        });
+    }
+
+    // ── Remove metadata ─────────────────────────────────────────────────────
+    removeBtn.addEventListener('click', removeMetadata);
+
+    async function removeMetadata() {
+        // Collect fully-checked groups
+        const removeGroups = [];
+        document.querySelectorAll('.group-cb:checked').forEach(cb => {
+            // Only include if ALL child tags are checked
+            const section = cb.closest('.meta-group');
+            const all = section.querySelectorAll('.tag-cb');
+            const checked = section.querySelectorAll('.tag-cb:checked');
+            if (checked.length === all.length) {
+                removeGroups.push(cb.dataset.ifd);
+            }
+        });
+
+        // Collect individually checked tags (not in fully-removed groups)
+        const removeTags = [];
+        document.querySelectorAll('.tag-cb:checked').forEach(cb => {
+            if (!removeGroups.includes(cb.dataset.ifd)) {
+                removeTags.push({ ifd: cb.dataset.ifd, id: parseInt(cb.dataset.id, 10) });
+            }
+        });
+
+        if (removeGroups.length === 0 && removeTags.length === 0) {
+            alert('Please select at least one metadata field to remove.');
+            return;
+        }
+
+        // Accumulate removals so each request strips everything from the original
+        removeGroups.forEach(g => cumulativeRemoveGroups.add(g));
+        removeTags.forEach(t => {
+            if (!cumulativeRemoveTags.some(e => e.ifd === t.ifd && e.id === t.id)) {
+                cumulativeRemoveTags.push(t);
+            }
+        });
+        // Drop individual tags that are covered by a full-group removal
+        const filteredTags = cumulativeRemoveTags.filter(t => !cumulativeRemoveGroups.has(t.ifd));
+
+        showSpinner('Removing metadata…');
+
+        try {
+            const res = await fetch('/remove_metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: currentSession,
+                    filename: currentFilename,
+                    remove_groups: [...cumulativeRemoveGroups],
+                    remove_tags: filteredTags,
+                }),
+            });
+            const data = await res.json();
+            hideSpinner();
+            if (data.error) { alert('Error: ' + data.error); return; }
+
+            downloadUrl = data.download_url;
+            removedSummary.textContent = `✓ ${data.removed_count} metadata field${data.removed_count !== 1 ? 's' : ''} removed.`;
+            placeholderCard.style.display = 'none';
+            resultsCard.style.display = 'block';
+
+            // Refresh metadata view with cleaned data
+            showMetadata(data.metadata);
+        } catch (err) {
+            hideSpinner();
+            alert('Network error: ' + err.message);
+        }
+    }
+
+    // ── Download ────────────────────────────────────────────────────────────
+    downloadBtn.addEventListener('click', () => {
+        if (downloadUrl) window.location.href = downloadUrl;
+    });
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    function showSpinner(msg) {
+        spinnerMsg.textContent = msg || 'Processing…';
+        spinnerEl.style.display = 'flex';
+    }
+    function hideSpinner() {
+        spinnerEl.style.display = 'none';
+    }
+    function esc(str) {
+        return String(str)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function truncate(str, n) {
+        return str.length > n ? str.slice(0, n) + '…' : str;
+    }
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+})();
+</script>
+</body>
+</html>
