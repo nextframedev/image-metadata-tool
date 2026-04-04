@@ -488,7 +488,13 @@
             if (data.error) { alert('Error: ' + data.error); return; }
 
             downloadUrl = data.download_url;
-            removedSummary.textContent = `✓ ${data.removed_count} metadata field${data.removed_count !== 1 ? 's' : ''} removed.`;
+            if (data.warning) {
+                removedSummary.textContent = '⚠ ' + data.warning;
+                removedSummary.style.color = 'var(--warning)';
+            } else {
+                removedSummary.textContent = `✓ ${data.removed_count} metadata field${data.removed_count !== 1 ? 's' : ''} removed.`;
+                removedSummary.style.color = '';
+            }
             placeholderCard.style.display = 'none';
             resultsCard.style.display = 'block';
 

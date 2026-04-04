@@ -230,11 +230,25 @@ def strip_metadata(image_bytes, filename, remove_groups, remove_tags):
 
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
+    def _strip_all_exif(image_bytes, ext):
+        """Fallback: strip ALL metadata by saving pixel data only."""
+        img = PILImage.open(io.BytesIO(image_bytes))
+        out = io.BytesIO()
+        fmt = 'JPEG' if ext in ('jpg', 'jpeg') else 'TIFF' if ext in ('tiff', 'tif') else (img.format or 'JPEG')
+        if img.mode in ('RGBA', 'P') and fmt == 'JPEG':
+            img = img.convert('RGB')
+        save_kwargs = {'quality': 95} if fmt == 'JPEG' else {}
+        # Save without exif= parameter to strip all metadata
+        img.save(out, format=fmt, **save_kwargs)
+        out.seek(0)
+        return out.read()
+
     # Load EXIF
     try:
         exif_dict = piexif.load(image_bytes)
-    except Exception as e:
-        raise RuntimeError(f'Cannot parse EXIF: {e}')
+    except Exception:
+        # piexif can't parse (e.g. embedded null bytes)
+        return _strip_all_exif(image_bytes, ext), -1
 
     removed = 0
 
@@ -252,14 +266,18 @@ def strip_metadata(image_bytes, filename, remove_groups, remove_tags):
             del exif_dict[ifd][tag_id]
             removed += 1
 
-    # Re-encode
+    # Re-encode — if dump fails, fall back to stripping all metadata
     try:
         exif_bytes = piexif.dump(exif_dict)
     except Exception:
-        # If dump fails (e.g., thumbnail issues), strip thumbnail and retry
-        exif_dict.pop('thumbnail', None)
-        exif_dict['1st'] = {}
-        exif_bytes = piexif.dump(exif_dict)
+        try:
+            # Retry without thumbnail
+            exif_dict.pop('thumbnail', None)
+            exif_dict['1st'] = {}
+            exif_bytes = piexif.dump(exif_dict)
+        except Exception:
+            # piexif can't re-encode (null bytes, corrupt data)
+            return _strip_all_exif(image_bytes, ext), -1
 
     # Write back to image
     img = PILImage.open(io.BytesIO(image_bytes))
@@ -415,17 +433,27 @@ def remove_metadata():
     except RuntimeError as e:
         return jsonify({'error': str(e)}), 400
 
+    # -1 means piexif couldn't handle this image — all metadata was stripped
+    warning = None
+    if removed_count == -1:
+        warning = ('This image has EXIF data that cannot be selectively edited. '
+                   'All metadata was stripped instead.')
+        removed_count = 0
+
     # Save cleaned version
     (UPLOAD_FOLDER / session_id / clean_name).write_bytes(cleaned_bytes)
 
     # Re-extract metadata from cleaned image for updated view
     new_metadata = extract_metadata(cleaned_bytes, filename)
 
-    return jsonify({
+    resp = {
         'removed_count': removed_count,
         'download_url': f'/download/{session_id}/{clean_name}',
         'metadata': new_metadata,
-    })
+    }
+    if warning:
+        resp['warning'] = warning
+    return jsonify(resp)
 
 
 @app.route('/download/<session_id>/<filename>')
