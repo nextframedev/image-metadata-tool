@@ -97,7 +97,7 @@ Authors: Blue J. Lion & Lu Li
 ## Books by the Authors
 
 <p align="center">
-  <a href="https://www.amazon.com/dp/B0GRVLNV2H">
+  <a href="https://www.amazon.com/stores/Quiet-Line-Press/author/B0GR1QS773/allbooks">
     <img src="assets/books-qr.png" alt="QR code to our books on Amazon" width="200">
   </a>
   <br>
